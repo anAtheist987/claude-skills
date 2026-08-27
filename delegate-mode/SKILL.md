@@ -40,9 +40,11 @@ const results = await pipeline(tasks,
 |---|---|---|
 | 规划、创新、开放分析、方案取舍、验证裁决、综合成文 | `fable` | **默认倾向**:多数实质工作开 fable 做 dynamic workflow,prompt 给足自由度(给目标和边界,不给步骤清单),让它自己决定怎么达成 |
 | 写代码、修 bug、执行明确 goal 的任务(目标清晰、成败可验) | `opus` | prompt 要有明确的 done 判据(测试过、编译过) |
-| 简单搜索、读文件、不需要知识或思考的压缩式总结、context pack 采集、机械核对 | `sonnet` | 配 `effort: 'low'` 更省;凡是"把长的变短、把散的变结构"且无判断成分的都归这档 |
+| 简单搜索、读文件、不需要知识或思考的压缩式总结、context pack 采集、机械核对 | `sonnet` | 凡是"把长的变短、把散的变结构"且无判断成分的都归这档 |
 
-拿不准就升一档,不降档——省错了模型比多花 token 贵。fable agent 的 prompt 风格:陈述 goal、约束、返回格式,明确允许它自主选择路径("You decide the approach; report what you chose and why in one line")。
+拿不准就升一档,不降档——省错了模型比多花 token 贵。
+
+**Effort 一律 xhigh(0827 用户令)**:所有 workflow `agent()` 调用与 `Agent` 派发,**无论模型档位**,显式传 `effort: 'xhigh'`,不留默认继承。仅两个例外:①用 `resumeFromRunId` 恢复时,已完成调用的 opts 必须保持一字不动(effort 在缓存键里,改了会让已完成的昂贵阶段重跑);②用户对某次任务显式另有指示。fable agent 的 prompt 风格:陈述 goal、约束、返回格式,明确允许它自主选择路径("You decide the approach; report what you chose and why in one line")。
 
 ## 四、分派路由(按任务形状)
 
