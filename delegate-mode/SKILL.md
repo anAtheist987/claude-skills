@@ -1,6 +1,6 @@
 ---
 name: delegate-mode
-description: 精简主上下文的分派工作模式:主 agent(Fable)只保留对话与结论,实质工作分派给 Workflow/子 agent 在干净短上下文里执行;读文件收敛到 workflow 第一个 agent 产出 context pack 供后续阶段继承;按任务性质分级用模型(规划/创新/分析→fable,明确目标写码→opus,简单搜读→sonnet);指令用英文、结构化返回,结果译成中文向用户汇报。用户说"开分派模式/delegate mode/省着点context干/开workflow干活"时启用,启用后本会话持续生效。Delegation work-mode: lean main context, workflow-first execution with a read-once context pack and per-task model tiers.
+description: 精简主上下文的分派工作模式:主 agent(Fable)只保留对话与结论,实质工作分派给 Workflow/子 agent 在干净短上下文里执行;读文件收敛到 workflow 第一阶段的并行分片 reader(每片≤3-4文件,纯 JS merge)产出 context pack 供后续阶段继承;按任务性质分级用模型(规划/创新/分析→fable,明确目标写码→opus,简单搜读→sonnet);指令用英文、结构化返回,结果译成中文向用户汇报。用户说"开分派模式/delegate mode/省着点context干/开workflow干活"时启用,启用后本会话持续生效。Delegation work-mode: lean main context, workflow-first execution with a read-once context pack and per-task model tiers.
 ---
 
 # 分派工作模式(Delegate Mode)
@@ -22,16 +22,21 @@ description: 精简主上下文的分派工作模式:主 agent(Fable)只保留�
 Workflow 里的 agent **不自动共享上下文**。继承靠脚本手工传递,所以把"读"收敛成第一阶段:
 
 0. **派发前先倾倒已知信息**:主 agent 把自己**已经知道**的关键事实通过 `args` 或直接写进 prompt 带进 workflow——确切文件路径、验证过能用的命令与工具、端口、配置字段名、会话里已定的结论与口径、已知的坑。子 agent 每一次"重新发现"主 agent 已知的事,都是白花的 tool call;stage 0 只去读主 agent 手里没有的东西。
-1. **Stage 0 — Context Pack(读且只读一次)**:workflow 的第一个 agent 负责所有原始输入的读取(文件、日志、schema、既有代码),以主 agent 倾倒的已知信息为起点(不重新验证已确认的事实),返回一个结构化 **context pack**(JSON schema 强制):相关代码摘录(带 `file:line`)、约束、既有约定、术语表。宁可略厚,不可缺关键段——后续 agent 拿不到它没打包的东西。已知信息足够覆盖任务时,stage 0 可以整个跳过,把主 agent 给的信息直接当 pack 用。
+1. **Stage 0 — Context Pack(读且只读一次,但不是一个 agent 读)**:context pack 的采集以主 agent 倾倒的已知信息为起点(不重新验证已确认的事实),返回结构化 **context pack**(JSON schema 强制):相关代码摘录(带 `file:line`)、约束、既有约定、术语表。宁可略厚,不可缺关键段——后续 agent 拿不到它没打包的东西。已知信息足够覆盖任务时,stage 0 可以整个跳过,把主 agent 给的信息直接当 pack 用。
+   **必须分片(0828 用户令)**:输入超过 ~4 个文件或读取量超过 ~50k token 时,按主题把文件分组拆成**并行 shard agents**(每个 shard ≤3-4 个文件),读完用纯 JS 把各 shard 的 excerpts/conventions/gaps 数组 merge 成一个 pack——绝不把一长串文件塞给单个 agent 串行读。教训(0828 实测):12 个文件 + 大 schema 给单个 sonnet,同一缓存键连续重启 5 次、零产出;拆 4 片后一次通过。每个 shard 的 schema 也要小(excerpts maxItems ≤12、单条 quote ≤1500 字符),大结构化输出会撞 180s 打断(见 workflow-agent-output-cap 教训)。
+   **sonnet 注意力预算**:sonnet 的工作集(输入+产出)控制在 ~100k token 以内,预估超过就拆片或升档;200k 以上的读任务绝不给单个 sonnet。fable/opus 同理适用"能并行就不串行",只是阈值更宽。
 2. **后续每个 agent 的 prompt = 英文指令骨架 + 注入 context pack(或其相关切片)**。后续 agent 原则上不再自己去读同一批文件;只有当它发现 pack 缺料时才允许补读,并在返回里注明补了什么(脚本可把补读结果合并回 pack)。
 3. **多级传递**:pipeline 里前一阶段的返回值就是后一阶段的输入,把 pack 一路 thread 下去;需要的话在阶段间用纯 JS 做切片/合并,不要为搬运数据开 agent。
 
 ```js
-const pack = await agent(
-  `Read ${files.join(', ')} and produce a context pack: relevant excerpts with file:line, constraints, existing conventions. Err on the side of including borderline-relevant material.`,
-  { label: 'context-pack', model: 'sonnet', schema: PACK_SCHEMA })
+// stage 0: sharded parallel reads, merged in pure JS
+const shards = await parallel(fileGroups.map((g, i) => () => agent(
+  `You are one of ${fileGroups.length} parallel readers building a context pack. Read ONLY your shard: ${g.files.join(', ')}. Return excerpts with file:line, constraints, conventions. Under 1500 words.`,
+  { label: `pack:${g.name}`, model: 'sonnet', effort: 'xhigh', schema: SHARD_SCHEMA })))
+const ok = shards.filter(Boolean)
+const pack = { excerpts: ok.flatMap(s => s.excerpts), conventions: ok.flatMap(s => s.conventions), gaps: ok.flatMap(s => s.gaps) }
 const results = await pipeline(tasks,
-  (t) => agent(`${t.instruction}\n\n## Context pack\n${JSON.stringify(pack)}`, { model: t.model, schema: t.schema }))
+  (t) => agent(`${t.instruction}\n\n## Context pack\n${JSON.stringify(pack)}`, { model: t.model, effort: 'xhigh', schema: t.schema }))
 ```
 
 ## 三、模型分级
